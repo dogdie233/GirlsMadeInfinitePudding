@@ -1,6 +1,5 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
-using Aprillz.MewUI.Rendering;
 
 using GirlsMadeInfinitePudding;
 using GirlsMadeInfinitePudding.GameAbi;
@@ -55,6 +54,7 @@ InventoryGroup? SelectedInv()
 
 vm.FoodBankVersion.Subscribe(() =>
 {
+    // ReSharper disable once AccessToModifiedClosure
     foodList?.InvalidateMeasure();
     // Collapse stale selection.
     if (selectedFoodIndex.Value >= vm.FoodBankFiltered.Count)
@@ -62,12 +62,14 @@ vm.FoodBankVersion.Subscribe(() =>
 });
 vm.InventoryVersion.Subscribe(() =>
 {
+    // ReSharper disable once AccessToModifiedClosure
     invList?.InvalidateMeasure();
     if (selectedInvIndex.Value >= vm.CurrentInventory.Count)
         selectedInvIndex.Value = -1;
 });
 
 // ---- section builders ---------------------------------------------------
+
 
 Element ConnectionBar() => new GroupBox()
     .Header("Connection")
@@ -129,12 +131,30 @@ Element AddFoodTab() => new Grid()
 
         new GroupBox()
             .Row(2).Column(0)
+            .Padding(0, 0)
+            .BorderThickness(0)
             .Header("ItemBank")
             .Content(
                 new ListBox()
                     .Ref(out foodList)
-                    .ItemsSource(ItemsSource.Create(vm.FoodBankFiltered,
-                        i => $"{i.Id}   (T{i.Tier}  prio={i.Priority})"))
+                    .ItemsSource(new ItemsView<ItemInfo>(vm.FoodBankFiltered, i => $"{i.Name} ({i.Id})", i => i.Id))
+                    .ItemTemplate<ItemInfo>(build: ctx => new StackPanel()
+                            .Horizontal()
+                            .Spacing(8)
+                            .CenterVertical()
+                            .Children(
+                                new Image()
+                                    .Register(ctx, "Icon")
+                                    .Size(32, 32)
+                                    .StretchMode(Stretch.Uniform),
+                                new Label()
+                                    .Register(ctx, "Text")
+                            ),
+                        bind: (_, item, _, ctx) =>
+                        {
+                            ctx.Get<Image>("Icon").Source = item.ImageSource;
+                            ctx.Get<Label>("Text").Text = $"{item.Name} ({item.Id})";
+                        })
                     .BindSelectedIndex(selectedFoodIndex)),
 
         new GroupBox()
@@ -147,7 +167,7 @@ Element AddFoodTab() => new Grid()
                         new Label()
                             .BindText(selectedFoodIndex, _ =>
                                 SelectedFood() is { } f
-                                    ? $"Id:    {f.Id}\nTier:  {f.Tier}\nPrio:  {f.Priority}\nType:  {f.Type}"
+                                    ? $"Id:    {f.Id}\nName:  {f.Name}\nTier:  {f.Tier}\nPrio:  {f.Priority}\nType:  {f.Type}"
                                     : "(no selection)")
                             .FontFamily("Consolas"),
                         new Label().Text("Count:").Bold(),
@@ -187,7 +207,28 @@ Element InventoryTab() => new Grid()
             .Content(
                 new ListBox()
                     .Ref(out invList)
-                    .ItemsSource(ItemsSource.Create(vm.CurrentInventory, g => g.DisplayText))
+                    .ItemsSource(ItemsSource.Create(vm.CurrentInventory, i => i.Sample.Id))
+                    .ItemTemplate<InventoryGroup>(
+                        build: ctx => new StackPanel()
+                            .Horizontal()
+                            .Spacing(8)
+                            .CenterVertical()
+                            .Children(
+                                new Image()
+                                    .Register(ctx, "Icon")
+                                    .Size(32, 32)
+                                    .StretchMode(Stretch.Uniform),
+                                new Label()
+                                    .Register(ctx, "Name"),
+                                new Label()
+                                    .Register(ctx, "Amount")
+                            ),
+                        bind: (_, item, _, ctx) =>
+                        {
+                            ctx.Get<Image>("Icon").Source = item.Sample.ImageSource;
+                            ctx.Get<Label>("Name").Text = $"{item.Sample.Name} ({item.Sample.Id})";
+                            ctx.Get<Label>("Amount").Text = $"x{item.Count}";
+                        })
                     .BindSelectedIndex(selectedInvIndex)),
 
         new GroupBox()
@@ -200,7 +241,7 @@ Element InventoryTab() => new Grid()
                         new Label()
                             .BindText(selectedInvIndex, _ =>
                                 SelectedInv() is { } g
-                                    ? $"Id:    {g.Sample.Id}\nCount: {g.Count}\nTier:  {g.Sample.Tier}"
+                                    ? $"Id:    {g.Sample.Id}\nName:  {g.Sample.Name}\nCount: {g.Count}\nTier:  {g.Sample.Tier}"
                                     : "(no selection)")
                             .FontFamily("Consolas"),
                         new Button()

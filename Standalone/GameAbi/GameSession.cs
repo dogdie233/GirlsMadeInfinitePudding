@@ -58,17 +58,74 @@ public sealed class GameSession : IDisposable
 
     // ======================= READ-SIDE ======================================
 
-    public List<ItemInfo> ListAllItems() =>
-        Reader.ReadAllItems(EnsureItemBank());
+    public List<ItemInfo> ListAllItems()
+    {
+        var items = Reader.ReadAllItems(EnsureItemBank());
+        for (int i = 0; i < items.Count; i++)
+        {
+            items[i] = AugmentItemData(items[i]);
+        }
+        return items;
+    }
+
+    public ItemInfo AugmentItemData(ItemInfo info)
+    {
+        if (info.DataPtr == IntPtr.Zero || !info.Valid) return info;
+        
+        string name = info.Id;
+        UnityColorImageSource? image = null;
+
+        try
+        {
+            var getNameFn = Proc.ResolveRva(Offsets.Fn_ItemData_get_Name);
+            var namePtr = Invoker.InvokeNative(getNameFn, info.DataPtr);
+            if (namePtr != 0)
+            {
+                var s = Proc.ReadIl2CppString((IntPtr)namePtr);
+                if (!string.IsNullOrEmpty(s)) name = s;
+            }
+
+            // var getImageFn = Proc.ResolveRva(Offsets.Fn_ItemData_get_Image);
+            // var texPtr = (IntPtr)Invoker.InvokeNative(getImageFn, info.DataPtr);
+            //
+            // if (texPtr != IntPtr.Zero)
+            // {
+            //     var wFn = Proc.ResolveRva(Offsets.Fn_Texture_get_width);
+            //     var hFn = Proc.ResolveRva(Offsets.Fn_Texture_get_height);
+            //     var pixFn = Proc.ResolveRva(Offsets.Fn_Texture2D_GetPixels32);
+            //
+            //     int width = (int)Invoker.InvokeNative(wFn, texPtr);
+            //     int height = (int)Invoker.InvokeNative(hFn, texPtr);
+            //
+            //     var arrPtr = (IntPtr)Invoker.InvokeNative(pixFn, texPtr);
+            //     if (arrPtr != IntPtr.Zero && width > 0 && height > 0)
+            //     {
+            //         int expectedSize = width * height;
+            //         int arrLen = Reader.ReadArrayLength(arrPtr);
+            //         
+            //         if (arrLen >= expectedSize)
+            //         {
+            //             var byteLen = expectedSize * 4;
+            //             var bytes = new byte[byteLen];
+            //             Proc.Read(arrPtr + Offsets.Array.FirstElem, bytes);
+            //             image = new UnityColorImageSource(bytes, width, height);
+            //         }
+            //     }
+            // }
+        }
+        catch { }
+
+        return info with { Name = name, ImageSource = image };
+    }
 
     public List<ItemInfo> ListFoodBank() =>
         ListAllItems().Where(i => i.Type == (int)Offsets.ItemType.Food).ToList();
 
     public List<ItemInfo> ListCurrentInventory() =>
-        Reader.ReadInventoryList(EnsureInventory(), keyItems: false);
+        Reader.ReadInventoryList(EnsureInventory(), keyItems: false).Select(AugmentItemData).ToList();
 
     public List<ItemInfo> ListCurrentKeyItems() =>
-        Reader.ReadInventoryList(EnsureInventory(), keyItems: true);
+        Reader.ReadInventoryList(EnsureInventory(), keyItems: true).Select(AugmentItemData).ToList();
 
     public int CurrentFoodCount()  => Reader.ReadItemCount(EnsureInventory());
     public int CurrentKeyCount()   => Reader.ReadKeyItemCount(EnsureInventory());

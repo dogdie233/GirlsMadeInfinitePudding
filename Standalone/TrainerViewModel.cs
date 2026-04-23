@@ -203,5 +203,4 @@ public sealed class TrainerViewModel : IDisposable
 /// <summary>A (food, quantity) row for the "current inventory" tab.</summary>
 public readonly record struct InventoryGroup(ItemInfo Sample, int Count)
 {
-    public string DisplayText => $"x{Count,-4} {Sample.Id}";
 }

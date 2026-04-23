@@ -2,7 +2,7 @@ using GirlsMadeInfinitePudding.ProcessMemory;
 
 namespace GirlsMadeInfinitePudding.GameAbi;
 
-public readonly record struct ItemInfo(IntPtr DataPtr, string Id, int Type, int Tier, int Priority, bool Valid);
+public readonly record struct ItemInfo(IntPtr DataPtr, string Id, int Type, int Tier, int Priority, bool Valid, string Name, UnityColorImageSource? ImageSource);
 
 /// <summary>
 /// Pure-read helpers over the game's object graph.  These don't require a
@@ -36,7 +36,7 @@ public sealed class GameReader
         int type   = _proc.ReadI32(itemData + Offsets.ItemData.Type);
         int tier   = _proc.ReadI32(itemData + Offsets.ItemData.Tier);
         int prio   = _proc.ReadI32(itemData + Offsets.ItemData.Priority);
-        return new ItemInfo(itemData, id, type, tier, prio, valid);
+        return new ItemInfo(itemData, id, type, tier, prio, valid, "(Not Loaded)", null);
     }
 
     // ---- Inventory readers ---------------------------------------------------

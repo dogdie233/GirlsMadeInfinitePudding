@@ -37,6 +37,13 @@ public static class Offsets
     public const ulong Fn_ItemBankHolder_getItemsByType     = 0x18049eb90UL;
     public const ulong Fn_ItemBankHolder_getItems           = 0x18049ed10UL;
 
+    public const ulong Fn_ItemData_get_Name                 = 0x18049FE10UL;
+    public const ulong Fn_ItemData_get_Image                = 0x1804479C0UL;
+
+    public const ulong Fn_Texture_get_width                 = 0x182173090UL;
+    public const ulong Fn_Texture_get_height                = 0x182172FB0UL;
+    public const ulong Fn_Texture2D_GetPixels32             = 0x18216CBF0UL;
+
     public const ulong Fn_GlobalAccess_get_object           = 0x1806f40a0UL;
 
     // MethodInfo* "slots" in the g_MetadataRegistration table.  The DWORD
@@ -47,6 +54,7 @@ public static class Offsets
     public const ulong Slot_Method_GlobalAccess_get_Inventory       = 0x182fd0e48UL;
     public const ulong Slot_Method_GlobalAccess_get_ItemBankHolder  = 0x182fd0f60UL;
     public const ulong Slot_Method_GlobalAccess_get_StoryManager    = 0x182fd2bd0UL;
+    public const ulong Slot_Method_ItemData_get_Name                = 0x18049FE10UL;
 
     // ============ Struct offsets (pulled from il2cpp dump) ====================
 
