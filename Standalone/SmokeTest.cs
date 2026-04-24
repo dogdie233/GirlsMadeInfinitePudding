@@ -1,21 +1,23 @@
+using System.Text;
+
 using GirlsMadeInfinitePudding.GameAbi;
 using GirlsMadeInfinitePudding.ProcessMemory;
 
 namespace GirlsMadeInfinitePudding;
 
 /// <summary>
-/// Opt-in smoke test for the data layer.  Invoke with
-/// <code>dotnet run -- --smoketest</code>
-/// after launching the game.  Useful while the UI is still being built.
+///     Opt-in smoke test for the data layer.  Invoke with
+///     <code>dotnet run -- --smoketest</code>
+///     after launching the game.  Useful while the UI is still being built.
 /// </summary>
 public static class SmokeTest
 {
     public static int Run(string[]? _)
     {
-        Console.OutputEncoding = System.Text.Encoding.UTF8;
+        Console.OutputEncoding = Encoding.UTF8;
         try
         {
-            using var proc    = GameProcess.Attach();
+            using var proc = GameProcess.Attach();
             using var session = new GameSession(proc);
             Console.WriteLine(
                 $"Attached pid={proc.Pid}  GameAssembly @ 0x{(long)proc.GameAssemblyBase:X} " +
@@ -26,7 +28,7 @@ public static class SmokeTest
             Console.WriteLine($"ItemBankHolder = 0x{(long)session.ItemBankHolder:X}");
             Console.WriteLine($"StoryManager   = 0x{(long)session.StoryManager:X}");
 
-            Console.WriteLine($"\n-- ItemBank dump (foods only) --");
+            Console.WriteLine("\n-- ItemBank dump (foods only) --");
             foreach (var it in session.ListFoodBank())
                 Console.WriteLine($"  [{it.Type}] {it.Id,-24} tier={it.Tier} prio={it.Priority}");
 

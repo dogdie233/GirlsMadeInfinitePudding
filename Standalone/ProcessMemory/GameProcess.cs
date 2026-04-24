@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.System.Diagnostics.ToolHelp;
@@ -12,27 +13,40 @@ using Microsoft.Win32.SafeHandles;
 namespace GirlsMadeInfinitePudding.ProcessMemory;
 
 /// <summary>
-/// Attached handle to the running game.  Also locates GameAssembly.dll so
-/// callers can turn IDA RVAs into absolute pointers, and exposes primitive
-/// read/write + remote-call helpers.
+///     Attached handle to the running game.  Also locates GameAssembly.dll so
+///     callers can turn IDA RVAs into absolute pointers, and exposes primitive
+///     read/write + remote-call helpers.
 /// </summary>
 public sealed class GameProcess : IDisposable
 {
     private const string ProcessName = "girls-made-pudding";
-    private const string ModuleName  = "GameAssembly.dll";
+    private const string ModuleName = "GameAssembly.dll";
+
     /// <summary>Image base recorded in the IDB.  Used to translate RVAs.</summary>
     public const ulong IdaImageBase = 0x180000000UL;
+
+    private GameProcess(SafeProcessHandle h, int pid, IntPtr modBase, uint modSize)
+    {
+        Handle = h;
+        Pid = pid;
+        GameAssemblyBase = modBase;
+        GameAssemblySize = modSize;
+    }
 
     public SafeProcessHandle Handle { get; }
     public int Pid { get; }
 
     /// <summary>Runtime base of GameAssembly.dll inside the game process.</summary>
     public IntPtr GameAssemblyBase { get; }
-    public uint   GameAssemblySize { get; }
 
-    private GameProcess(SafeProcessHandle h, int pid, IntPtr modBase, uint modSize)
+    public uint GameAssemblySize { get; }
+
+    // ------------------------------------------------------------------------
+    private HANDLE ProcHandle => new(Handle.DangerousGetHandle());
+
+    public void Dispose()
     {
-        Handle = h; Pid = pid; GameAssemblyBase = modBase; GameAssemblySize = modSize;
+        Handle.Dispose();
     }
 
     public static GameProcess Attach(string? overrideProcessName = null)
@@ -45,7 +59,7 @@ public sealed class GameProcess : IDisposable
         foreach (var extra in procs.Skip(1)) extra.Dispose();
 
         const PROCESS_ACCESS_RIGHTS access =
-            PROCESS_ACCESS_RIGHTS.PROCESS_VM_READ  |
+            PROCESS_ACCESS_RIGHTS.PROCESS_VM_READ |
             PROCESS_ACCESS_RIGHTS.PROCESS_VM_WRITE |
             PROCESS_ACCESS_RIGHTS.PROCESS_VM_OPERATION |
             PROCESS_ACCESS_RIGHTS.PROCESS_CREATE_THREAD |
@@ -70,7 +84,7 @@ public sealed class GameProcess : IDisposable
     /// <summary>Convert an IDA RVA (or image-based address) to an absolute pointer.</summary>
     public IntPtr ResolveRva(ulong idaAddress)
     {
-        ulong rva = idaAddress >= IdaImageBase ? idaAddress - IdaImageBase : idaAddress;
+        var rva = idaAddress >= IdaImageBase ? idaAddress - IdaImageBase : idaAddress;
         return checked((IntPtr)((ulong)GameAssemblyBase + rva));
     }
 
@@ -82,9 +96,12 @@ public sealed class GameProcess : IDisposable
         {
             if (!PInvoke.ReadProcessMemory(ProcHandle, (void*)address, p, (nuint)dest.Length, &read)
                 || read != (nuint)dest.Length)
-                throw new InvalidOperationException(
+            {
+                var err = Marshal.GetLastWin32Error();
+                throw new RemoteInvocationException(
                     $"ReadProcessMemory failed @ 0x{(long)address:X} len={dest.Length} " +
-                    $"(err {Marshal.GetLastWin32Error()})");
+                    $"(err {err})", err);
+            }
         }
     }
 
@@ -95,33 +112,84 @@ public sealed class GameProcess : IDisposable
         {
             if (!PInvoke.WriteProcessMemory(ProcHandle, (void*)address, p, (nuint)src.Length, &written)
                 || written != (nuint)src.Length)
-                throw new InvalidOperationException(
+            {
+                var err = Marshal.GetLastWin32Error();
+                throw new RemoteInvocationException(
                     $"WriteProcessMemory failed @ 0x{(long)address:X} len={src.Length} " +
-                    $"(err {Marshal.GetLastWin32Error()})");
+                    $"(err {err})", err);
+            }
         }
     }
 
-    public byte   ReadU8 (IntPtr a) { Span<byte> b = stackalloc byte[1]; Read(a, b); return b[0]; }
-    public int    ReadI32(IntPtr a) { Span<byte> b = stackalloc byte[4]; Read(a, b); return BitConverter.ToInt32(b); }
-    public uint   ReadU32(IntPtr a) { Span<byte> b = stackalloc byte[4]; Read(a, b); return BitConverter.ToUInt32(b); }
-    public long   ReadI64(IntPtr a) { Span<byte> b = stackalloc byte[8]; Read(a, b); return BitConverter.ToInt64(b); }
-    public ulong  ReadU64(IntPtr a) { Span<byte> b = stackalloc byte[8]; Read(a, b); return BitConverter.ToUInt64(b); }
-    public IntPtr ReadPtr(IntPtr a) => (IntPtr)ReadI64(a);
+    public byte ReadU8(IntPtr a)
+    {
+        Span<byte> b = stackalloc byte[1];
+        Read(a, b);
+        return b[0];
+    }
 
-    public void WriteI32(IntPtr a, int v)    => Write(a, BitConverter.GetBytes(v));
-    public void WriteU32(IntPtr a, uint v)   => Write(a, BitConverter.GetBytes(v));
-    public void WriteU64(IntPtr a, ulong v)  => Write(a, BitConverter.GetBytes(v));
-    public void WritePtr(IntPtr a, IntPtr v) => WriteU64(a, (ulong)(long)v);
+    public int ReadI32(IntPtr a)
+    {
+        Span<byte> b = stackalloc byte[4];
+        Read(a, b);
+        return BitConverter.ToInt32(b);
+    }
+
+    public uint ReadU32(IntPtr a)
+    {
+        Span<byte> b = stackalloc byte[4];
+        Read(a, b);
+        return BitConverter.ToUInt32(b);
+    }
+
+    public long ReadI64(IntPtr a)
+    {
+        Span<byte> b = stackalloc byte[8];
+        Read(a, b);
+        return BitConverter.ToInt64(b);
+    }
+
+    public ulong ReadU64(IntPtr a)
+    {
+        Span<byte> b = stackalloc byte[8];
+        Read(a, b);
+        return BitConverter.ToUInt64(b);
+    }
+
+    public IntPtr ReadPtr(IntPtr a)
+    {
+        return (IntPtr)ReadI64(a);
+    }
+
+    public void WriteI32(IntPtr a, int v)
+    {
+        Write(a, BitConverter.GetBytes(v));
+    }
+
+    public void WriteU32(IntPtr a, uint v)
+    {
+        Write(a, BitConverter.GetBytes(v));
+    }
+
+    public void WriteU64(IntPtr a, ulong v)
+    {
+        Write(a, BitConverter.GetBytes(v));
+    }
+
+    public void WritePtr(IntPtr a, IntPtr v)
+    {
+        WriteU64(a, (ulong)v);
+    }
 
     /// <summary>
-    /// IL2CPP System.String layout (64-bit):
-    ///   0x00 klass, 0x08 monitor, 0x10 int length, 0x14 UTF-16 chars
+    ///     IL2CPP System.String layout (64-bit):
+    ///     0x00 klass, 0x08 monitor, 0x10 int length, 0x14 UTF-16 chars
     /// </summary>
     public string? ReadIl2CppString(IntPtr stringObj)
     {
         if (stringObj == IntPtr.Zero) return null;
-        int length = ReadI32(stringObj + 0x10);
-        if (length <= 0)      return string.Empty;
+        var length = ReadI32(stringObj + 0x10);
+        if (length <= 0) return string.Empty;
         if (length > 0x10000) return $"<invalid len={length}>";
         var buf = new byte[length * 2];
         Read(stringObj + 0x14, buf);
@@ -131,15 +199,20 @@ public sealed class GameProcess : IDisposable
     // ---- remote allocation / thread ------------------------------------------
     public unsafe IntPtr Allocate(int size, bool executable = false)
     {
-        var protect = executable ? PAGE_PROTECTION_FLAGS.PAGE_EXECUTE_READWRITE
-                                 : PAGE_PROTECTION_FLAGS.PAGE_READWRITE;
+        var protect = executable
+            ? PAGE_PROTECTION_FLAGS.PAGE_EXECUTE_READWRITE
+            : PAGE_PROTECTION_FLAGS.PAGE_READWRITE;
         var p = PInvoke.VirtualAllocEx(ProcHandle, null, (nuint)size,
-                                       VIRTUAL_ALLOCATION_TYPE.MEM_COMMIT |
-                                       VIRTUAL_ALLOCATION_TYPE.MEM_RESERVE,
-                                       protect);
+            VIRTUAL_ALLOCATION_TYPE.MEM_COMMIT |
+            VIRTUAL_ALLOCATION_TYPE.MEM_RESERVE,
+            protect);
         if (p == null)
-            throw new InvalidOperationException(
-                $"VirtualAllocEx failed (err {Marshal.GetLastWin32Error()})");
+        {
+            var err = Marshal.GetLastWin32Error();
+            throw new RemoteInvocationException(
+                $"VirtualAllocEx failed (err {err})", err);
+        }
+
         return (IntPtr)p;
     }
 
@@ -150,35 +223,76 @@ public sealed class GameProcess : IDisposable
     }
 
     /// <summary>
-    /// CreateRemoteThread → WaitForSingleObject; returns the 32-bit thread
-    /// exit code.  Real return values should be stashed into a scratch slot
-    /// by the shellcode (thread exit codes only give you 32 bits).
+    ///     CreateRemoteThread → WaitForSingleObject; returns the 32-bit thread
+    ///     exit code.  Real return values should be stashed into a scratch slot
+    ///     by the shellcode (thread exit codes only give you 32 bits).
     /// </summary>
     public uint CallRemote(IntPtr entry, IntPtr arg, int timeoutMs = 10_000)
     {
-        var hProc   = Handle.DangerousGetHandle();
+        var hProc = Handle.DangerousGetHandle();
         var hThread = CreateRemoteThread(hProc, IntPtr.Zero, IntPtr.Zero,
-                                         entry, arg, 0, IntPtr.Zero);
+            entry, arg, 0, IntPtr.Zero);
         if (hThread == IntPtr.Zero)
-            throw new InvalidOperationException(
-                $"CreateRemoteThread failed (err {Marshal.GetLastWin32Error()})");
+        {
+            var err = Marshal.GetLastWin32Error();
+            throw new RemoteInvocationException(
+                $"CreateRemoteThread failed (err {err})", err);
+        }
+
         try
         {
             var h = new HANDLE(hThread);
             var wait = PInvoke.WaitForSingleObject(h, (uint)timeoutMs);
             if (wait != WAIT_EVENT.WAIT_OBJECT_0)
-                throw new InvalidOperationException($"Remote thread did not finish (wait={wait}).");
-            if (!GetExitCodeThreadNative(hThread, out uint ec))
-                throw new InvalidOperationException(
-                    $"GetExitCodeThread failed (err {Marshal.GetLastWin32Error()})");
+                throw new RemoteInvocationException(
+                    $"Remote thread did not finish (wait={wait}).", 0);
+            if (!GetExitCodeThreadNative(hThread, out var ec))
+            {
+                var err = Marshal.GetLastWin32Error();
+                throw new RemoteInvocationException(
+                    $"GetExitCodeThread failed (err {err})", err);
+            }
+
             return ec;
         }
-        finally { CloseHandleNative(hThread); }
+        finally
+        {
+            CloseHandleNative(hThread);
+        }
+    }
+
+    /// <summary>
+    ///     Cheap liveness probe.  Returns false once the game has crashed /
+    ///     exited / been killed — at which point every subsequent RPM will
+    ///     fail with ERROR_INVALID_HANDLE or ERROR_PARTIAL_COPY and a
+    ///     <see cref="RemoteInvocationException" /> will cascade out.  The UI
+    ///     uses this to tell the difference between "trainer bug" and "game
+    ///     is gone" and silently disconnect in the latter case.
+    /// </summary>
+    public bool IsProcessAlive()
+    {
+        // STILL_ACTIVE (259) is what GetExitCodeProcess returns while the
+        // process is still running.  If the handle is gone or the call
+        // fails for any reason, assume dead.
+        try
+        {
+            if (!GetExitCodeProcessNative(Handle.DangerousGetHandle(), out var code))
+                return false;
+            return code == 259;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     [DllImport("kernel32.dll", EntryPoint = "GetExitCodeThread", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetExitCodeThreadNative(IntPtr hThread, out uint exitCode);
+
+    [DllImport("kernel32.dll", EntryPoint = "GetExitCodeProcess", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetExitCodeProcessNative(IntPtr hProcess, out uint exitCode);
 
     [DllImport("kernel32.dll", EntryPoint = "CloseHandle", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -189,27 +303,18 @@ public sealed class GameProcess : IDisposable
     // actual managed delegate.  A hand-written P/Invoke is simpler.
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr CreateRemoteThread(IntPtr hProcess,
-                                                    IntPtr threadAttributes,
-                                                    IntPtr stackSize,
-                                                    IntPtr startAddress,
-                                                    IntPtr parameter,
-                                                    uint creationFlags,
-                                                    IntPtr threadId);
-
-    public void Dispose()
-    {
-        Handle.Dispose();
-        GC.SuppressFinalize(this);
-    }
-
-    // ------------------------------------------------------------------------
-    private HANDLE ProcHandle => new HANDLE(Handle.DangerousGetHandle());
+        IntPtr threadAttributes,
+        IntPtr stackSize,
+        IntPtr startAddress,
+        IntPtr parameter,
+        uint creationFlags,
+        IntPtr threadId);
 
     // ---- module enumeration -------------------------------------------------
     private static unsafe bool TryFindModule(int pid, string needle, out IntPtr baseAddr, out uint size)
     {
         baseAddr = IntPtr.Zero;
-        size     = 0;
+        size = 0;
         using var snap = PInvoke.CreateToolhelp32Snapshot_SafeHandle(
             CREATE_TOOLHELP_SNAPSHOT_FLAGS.TH32CS_SNAPMODULE |
             CREATE_TOOLHELP_SNAPSHOT_FLAGS.TH32CS_SNAPMODULE32, (uint)pid);
@@ -223,10 +328,11 @@ public sealed class GameProcess : IDisposable
                 string.Equals(me.szModule.ToString(), needle, StringComparison.OrdinalIgnoreCase))
             {
                 baseAddr = (IntPtr)me.modBaseAddr;
-                size     = me.modBaseSize;
+                size = me.modBaseSize;
                 return true;
             }
         } while (PInvoke.Module32NextW(snap, ref me));
+
         return false;
     }
 }

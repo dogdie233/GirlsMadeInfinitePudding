@@ -1,6 +1,7 @@
 ﻿using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
+
 using Aprillz.MewUI;
 using Aprillz.MewUI.Rendering;
 using Aprillz.MewUI.Resources;
@@ -27,7 +28,7 @@ public class UnityColorImageSource(byte[] data, int width, int height) : IImageS
         ReadOnlySpan<byte> srcSpan = data;
         Span<byte> dstSpan = bgraData;
 
-        int processedBytes = 0;
+        var processedBytes = 0;
 
         if (Vector128.IsHardwareAccelerated)
         {
@@ -37,20 +38,17 @@ public class UnityColorImageSource(byte[] data, int width, int height) : IImageS
                 10, 9, 8, 11,
                 14, 13, 12, (byte)15);
 
-            ReadOnlySpan<Vector128<byte>> srcVecSpan = MemoryMarshal.Cast<byte, Vector128<byte>>(srcSpan);
-            Span<Vector128<byte>> dstVecSpan = MemoryMarshal.Cast<byte, Vector128<byte>>(dstSpan);
+            var srcVecSpan = MemoryMarshal.Cast<byte, Vector128<byte>>(srcSpan);
+            var dstVecSpan = MemoryMarshal.Cast<byte, Vector128<byte>>(dstSpan);
 
-            for (int i = 0; i < srcVecSpan.Length; i++)
-            {
-                dstVecSpan[i] = Vector128.Shuffle(srcVecSpan[i], shuffleMask);
-            }
+            for (var i = 0; i < srcVecSpan.Length; i++) dstVecSpan[i] = Vector128.Shuffle(srcVecSpan[i], shuffleMask);
 
             // Cast 方法会自动计算能被 16 整除的长度，这里算出已经处理了多少 byte
             processedBytes = srcVecSpan.Length * 16;
         }
 
         // 处理不足 16 字节的剩余数据
-        for (int i = processedBytes; i < srcSpan.Length; i += 4)
+        for (var i = processedBytes; i < srcSpan.Length; i += 4)
         {
             dstSpan[i] = srcSpan[i + 2];
             dstSpan[i + 1] = srcSpan[i + 1];
@@ -63,18 +61,10 @@ public class UnityColorImageSource(byte[] data, int width, int height) : IImageS
 
     private class StaticPixelBufferSource(byte[] data, int width, int height) : IPixelBufferSource
     {
-        [UnsafeAccessor(UnsafeAccessorKind.Constructor)]
-        private static extern PixelBufferLock CreatePixelBufferLock(byte[] buffer,
-            int pixelWidth,
-            int pixelHeight,
-            int strideBytes,
-            BitmapPixelFormat pixelFormat,
-            int version,
-            PixelRegion? dirtyRegion,
-            Action? release);
-        
         public PixelBufferLock Lock()
-            => CreatePixelBufferLock(data, PixelWidth, PixelHeight, StrideBytes, PixelFormat, Version, null, null);
+        {
+            return CreatePixelBufferLock(data, PixelWidth, PixelHeight, StrideBytes, PixelFormat, Version, null, null);
+        }
 
         public int PixelWidth => width;
 
@@ -85,5 +75,15 @@ public class UnityColorImageSource(byte[] data, int width, int height) : IImageS
         public BitmapPixelFormat PixelFormat => BitmapPixelFormat.Bgra32;
 
         public int Version => 0;
+
+        [UnsafeAccessor(UnsafeAccessorKind.Constructor)]
+        private static extern PixelBufferLock CreatePixelBufferLock(byte[] buffer,
+            int pixelWidth,
+            int pixelHeight,
+            int strideBytes,
+            BitmapPixelFormat pixelFormat,
+            int version,
+            PixelRegion? dirtyRegion,
+            Action? release);
     }
 }

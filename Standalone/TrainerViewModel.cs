@@ -1,81 +1,225 @@
-using System.Diagnostics;
 using Aprillz.MewUI;
+using Aprillz.MewUI.Controls;
+
 using GirlsMadeInfinitePudding.GameAbi;
 using GirlsMadeInfinitePudding.ProcessMemory;
 
 namespace GirlsMadeInfinitePudding;
 
 /// <summary>
-/// Bridges the raw <see cref="GameSession"/> (which deals in naked pointers)
-/// and the MewUI-facing observable surface the UI binds against.  Keeps
-/// two mutable <see cref="List{T}"/> buffers (<see cref="FoodBank"/> and
-/// <see cref="CurrentInventory"/>) which the UI hands to
-/// <c>ItemsSource.Create</c> — they're edited in place, then
-/// <see cref="InventoryVersion"/> / <see cref="FoodBankVersion"/> tick to
-/// signal the UI it needs to re-measure its list boxes.
+///     Bridges the raw <see cref="GameSession" /> (which deals in naked pointers)
+///     and the MewUI-facing observable surface the UI binds against.  Keeps
+///     two mutable <see cref="List{T}" /> buffers (<see cref="FoodBank" /> and
+///     <see cref="CurrentInventory" />) which the UI hands to
+///     <c>ItemsSource.Create</c> — they're edited in place, then
+///     <see cref="InventoryVersion" /> / <see cref="FoodBankVersion" /> tick to
+///     signal the UI it needs to re-measure its list boxes.
 /// </summary>
 public sealed class TrainerViewModel : IDisposable
 {
-    // ---- observable state ---------------------------------------------------
-    public ObservableValue<string> Status           { get; } = new("Not connected.");
-    public ObservableValue<bool>   IsConnected      { get; } = new(false);
-    public ObservableValue<string> InventorySummary { get; } = new("—");
-    public ObservableValue<string> ConnectionInfo   { get; } = new("(no game attached)");
-
-    /// <summary>Versions tick whenever the in-place lists are mutated.</summary>
-    public ObservableValue<int> InventoryVersion { get; } = new(0);
-    public ObservableValue<int> FoodBankVersion  { get; } = new(0);
-
-    /// <summary>All food-type items (Type=Food).  Stable reference — mutated in place.</summary>
-    public List<ItemInfo> FoodBank { get; } = new();
-
-    /// <summary>Filtered view of <see cref="FoodBank"/>.  Stable reference — mutated in place.</summary>
-    public List<ItemInfo> FoodBankFiltered { get; } = new();
-
-    /// <summary>Current inventory grouped by ID.  Stable reference — mutated in place.</summary>
-    public List<InventoryGroup> CurrentInventory { get; } = new();
-
-    public ObservableValue<string> FoodFilter { get; } = new("");
-    public ObservableValue<int>    AddCount   { get; } = new(1);
-
-    private GameSession? _session;
-
     public TrainerViewModel()
     {
         FoodFilter.Subscribe(RecomputeFilter);
     }
 
-    public GameSession? Session => _session;
+    // ---- observable state ---------------------------------------------------
+    public ObservableValue<string> Status { get; } = new("Not connected.");
+    public ObservableValue<bool> IsConnected { get; } = new();
+    public ObservableValue<string> InventorySummary { get; } = new("—");
+    public ObservableValue<string> ConnectionInfo { get; } = new("(no game attached)");
+
+    /// <summary>Versions tick whenever the in-place lists are mutated.</summary>
+    public ObservableValue<int> InventoryVersion { get; } = new();
+
+    public ObservableValue<int> FoodBankVersion { get; } = new();
+
+    /// <summary>All food-type items (Type=Food).  Stable reference — mutated in place.</summary>
+    public List<ItemInfo> FoodBank { get; } = [];
+
+    /// <summary>Filtered view of <see cref="FoodBank" />.  Stable reference — mutated in place.</summary>
+    public List<ItemInfo> FoodBankFiltered { get; } = [];
+
+    /// <summary>Current inventory grouped by ID.  Stable reference — mutated in place.</summary>
+    public List<InventoryGroup> CurrentInventory { get; } = [];
+
+    public ObservableValue<string> FoodFilter { get; } = new("");
+    public ObservableValue<int> AddCount { get; } = new(1);
+
+    /// <summary>
+    ///     Hook supplied by the UI layer so the VM can raise result toasts
+    ///     ("Added x5 itemId", "Remove failed: ...") without depending on the
+    ///     concrete <see cref="Aprillz.MewUI.Window" />.  Status.Value remains the
+    ///     "in-progress" narration channel; Toast is for terminal outcomes.
+    /// </summary>
+    public Action<string>? Toast { get; set; }
+
+    public GameSession? Session { get; private set; }
+
+    public void Dispose()
+    {
+        Session?.Dispose();
+    }
+
+    // ---- exception plumbing -------------------------------------------------
+    /// <summary>
+    ///     Centralised failure handler.  Routes a thrown exception to the right
+    ///     surface depending on what kind of failure it is:
+    ///     <list type="bullet">
+    ///         <item>
+    ///             <description>
+    ///                 <see cref="RemoteInvocationException" /> where the game process is no
+    ///                 longer alive → silent <see cref="Disconnect" /> with a brief toast
+    ///                 ("Game process gone — disconnected.").  This handles the common
+    ///                 "game crashed mid-operation" case without scaring the user with a
+    ///                 ReadProcessMemory stack trace.
+    ///             </description>
+    ///         </item>
+    ///         <item>
+    ///             <description>
+    ///                 Anything else → raise <paramref name="action" /> to the toast channel
+    ///                 with the exception's own message.  Status gets a terse summary.
+    ///             </description>
+    ///         </item>
+    ///     </list>
+    ///     Intended call pattern is <c>try { ... } catch (Exception ex) { HandleActionException(ex, "Remove"); }</c>.
+    /// </summary>
+    private void HandleActionException(Exception ex, string action)
+    {
+        var procDead = Session is not null &&
+                       ex is RemoteInvocationException &&
+                       !Session.Proc.IsProcessAlive();
+        if (procDead)
+        {
+            // Silent-ish tear down.  We tick the observables back to the
+            // "no game" state but don't surface the underlying RPM error —
+            // that's noise; the real story is "game is gone".
+            Session?.Dispose();
+            Session = null;
+            IsConnected.Value = false;
+            ConnectionInfo.Value = "(no game attached)";
+            InventorySummary.Value = "—";
+            FoodBank.Clear();
+            RecomputeFilter();
+            CurrentInventory.Clear();
+            FoodBankVersion.Value++;
+            InventoryVersion.Value++;
+            Status.Value = "Game process gone — disconnected.";
+            Toast?.Invoke("Game process gone — disconnected.");
+            return;
+        }
+
+        Status.Value = $"{action} failed.";
+        Toast?.Invoke($"{action} failed: {ex.Message}");
+    }
 
     // ---- lifecycle ----------------------------------------------------------
-    public void Connect()
+    /// <summary>
+    ///     Connects to the game and pulls the item bank + current inventory on a
+    ///     worker thread, marshalling observable writes back to the UI dispatcher.
+    ///     The UI layer is responsible for surfacing the <see cref="IBusyIndicator" />
+    ///     and passing its cancellation token so the user can abort mid-dump.
+    /// </summary>
+    public async Task ConnectAsync(CancellationToken ct, Action<string>? progress = null)
     {
+        var dispatcher = Application.Current.Dispatcher;
+
+        void Post(Action a)
+        {
+            if (dispatcher is null) a();
+            else dispatcher.BeginInvoke(a);
+        }
+
         try
         {
-            _session?.Dispose();
-            var proc = GameProcess.Attach();
-            _session = new GameSession(proc);
-            _session.RefreshSingletons();
-            ConnectionInfo.Value = $"pid={proc.Pid}  GameAssembly @ 0x{(long)proc.GameAssemblyBase:X}";
-            IsConnected.Value    = true;
-            Status.Value         = "Connected.  Dumping item bank…";
-            RefreshAll();
-            Status.Value         = "Ready.";
+            Post(() => Status.Value = "Attaching to game process…");
+            progress?.Invoke("Attaching to game process…");
+
+            // Attach + session creation are genuinely blocking (PInvoke +
+            // memory scans), so they run off-thread.
+            var (session, pid, baseAddr) = await Task.Run(() =>
+            {
+                ct.ThrowIfCancellationRequested();
+                Session?.Dispose();
+                var proc = GameProcess.Attach();
+                var s = new GameSession(proc);
+                s.RefreshSingletons();
+                return (s, proc.Pid, proc.GameAssemblyBase);
+            }, ct);
+
+            Session = session;
+            Post(() =>
+            {
+                ConnectionInfo.Value = $"pid={pid}  GameAssembly @ 0x{(long)baseAddr:X}";
+                IsConnected.Value = true;
+                Status.Value = "Connected.  Dumping item bank…";
+            });
+            progress?.Invoke("Dumping item bank…");
+
+            // Pull item bank + inventory off-thread too — this walks a big list.
+            var (foods, groups, summary) = await Task.Run(() =>
+            {
+                ct.ThrowIfCancellationRequested();
+                var items = session.ListFoodBank()
+                    .OrderBy(i => i.Tier)
+                    .ThenBy(i => i.Id, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                ct.ThrowIfCancellationRequested();
+                var g = session.ListCurrentInventory()
+                    .GroupBy(i => i.Id, StringComparer.OrdinalIgnoreCase)
+                    .Select(x => new InventoryGroup(x.First(), x.Count()))
+                    .OrderBy(x => x.Sample.Id, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var sum =
+                    $"{session.CurrentFoodCount()} / {session.CurrentCountMax()}" +
+                    $"   (key items: {session.CurrentKeyCount()})";
+                return (items, g, sum);
+            }, ct);
+
+            Post(() =>
+            {
+                FoodBank.Clear();
+                FoodBank.AddRange(foods);
+                RecomputeFilter(); // already ticks FoodBankVersion
+                CurrentInventory.Clear();
+                CurrentInventory.AddRange(groups);
+                InventoryVersion.Value++;
+                InventorySummary.Value = summary;
+                Status.Value = "Ready.";
+            });
+            Toast?.Invoke($"Connected — {foods.Count} item definition(s).");
+        }
+        catch (OperationCanceledException)
+        {
+            Post(() =>
+            {
+                Session?.Dispose();
+                Session = null;
+                IsConnected.Value = false;
+                ConnectionInfo.Value = "(no game attached)";
+                Status.Value = "Connect cancelled.";
+            });
+            Toast?.Invoke("Connect cancelled.");
         }
         catch (Exception ex)
         {
-            IsConnected.Value    = false;
-            ConnectionInfo.Value = "(attach failed)";
-            Status.Value         = $"Connect failed: {ex.Message}";
+            Post(() =>
+            {
+                IsConnected.Value = false;
+                ConnectionInfo.Value = "(attach failed)";
+                Status.Value = "Connect failed.";
+            });
+            Toast?.Invoke($"Connect failed: {ex.Message}");
         }
     }
 
     public void Disconnect()
     {
-        _session?.Dispose();
-        _session = null;
-        IsConnected.Value      = false;
-        ConnectionInfo.Value   = "(no game attached)";
+        Session?.Dispose();
+        Session = null;
+        IsConnected.Value = false;
+        ConnectionInfo.Value = "(no game attached)";
         InventorySummary.Value = "—";
 
         FoodBank.Clear();
@@ -85,36 +229,38 @@ public sealed class TrainerViewModel : IDisposable
         InventoryVersion.Value++;
 
         Status.Value = "Disconnected.";
+        Toast?.Invoke("Disconnected.");
     }
 
     public void RefreshAll()
     {
-        if (_session is null) return;
+        if (Session is null) return;
         try
         {
-            var items = _session.ListFoodBank()
-                                .OrderBy(i => i.Tier)
-                                .ThenBy (i => i.Id, StringComparer.OrdinalIgnoreCase)
-                                .ToList();
+            var items = Session.ListFoodBank()
+                .OrderBy(i => i.Tier)
+                .ThenBy(i => i.Id, StringComparer.OrdinalIgnoreCase)
+                .ToList();
             FoodBank.Clear();
             FoodBank.AddRange(items);
             RecomputeFilter();
             FoodBankVersion.Value++;
 
             RefreshInventoryOnly();
+            Toast?.Invoke($"Refreshed — {items.Count} item(s).");
         }
         catch (Exception ex)
         {
-            Status.Value = $"Refresh failed: {ex.Message}";
+            HandleActionException(ex, "Refresh");
         }
     }
 
     public void RefreshInventoryOnly()
     {
-        if (_session is null) return;
+        if (Session is null) return;
         try
         {
-            var groups = _session.ListCurrentInventory()
+            var groups = Session.ListCurrentInventory()
                 .GroupBy(i => i.Id, StringComparer.OrdinalIgnoreCase)
                 .Select(g => new InventoryGroup(g.First(), g.Count()))
                 .OrderBy(g => g.Sample.Id, StringComparer.OrdinalIgnoreCase)
@@ -125,79 +271,92 @@ public sealed class TrainerViewModel : IDisposable
             InventoryVersion.Value++;
 
             InventorySummary.Value =
-                $"{_session.CurrentFoodCount()} / {_session.CurrentCountMax()}" +
-                $"   (key items: {_session.CurrentKeyCount()})";
+                $"{Session.CurrentFoodCount()} / {Session.CurrentCountMax()}" +
+                $"   (key items: {Session.CurrentKeyCount()})";
         }
         catch (Exception ex)
         {
-            Status.Value = $"Inventory refresh failed: {ex.Message}";
+            HandleActionException(ex, "Inventory refresh");
         }
     }
 
     // ---- actions ------------------------------------------------------------
     public void AddSelectedFood(ItemInfo? food, int count)
     {
-        if (_session is null || food is null) return;
+        if (Session is null || food is null) return;
         try
         {
-            _session.AddItem(food.Value.DataPtr, count, over: true);
-            Status.Value = $"Added x{count} {food.Value.Id}";
+            Session.AddItem(food.Value.DataPtr, count);
+            Toast?.Invoke($"Added x{count} {food.Value.Id}");
             RefreshInventoryOnly();
         }
-        catch (Exception ex) { Status.Value = $"Add failed: {ex.Message}"; }
+        catch (Exception ex)
+        {
+            HandleActionException(ex, "Add");
+        }
     }
 
     public void RemoveGroup(InventoryGroup g, int count)
     {
-        if (_session is null) return;
+        if (Session is null) return;
         try
         {
             var n = Math.Min(count, g.Count);
-            _session.RemoveItem(g.Sample.DataPtr, n);
-            Status.Value = $"Removed x{n} {g.Sample.Id}";
+            Session.RemoveItem(g.Sample.DataPtr, n);
+            Toast?.Invoke($"Removed x{n} {g.Sample.Id}");
             RefreshInventoryOnly();
         }
-        catch (Exception ex) { Status.Value = $"Remove failed: {ex.Message}"; }
+        catch (Exception ex)
+        {
+            HandleActionException(ex, "Remove");
+        }
     }
 
     public void ClearAllFood()
     {
-        if (_session is null) return;
+        if (Session is null) return;
         try
         {
-            _session.ClearFood();
-            Status.Value = "Cleared all food.";
+            Session.ClearFood();
+            Toast?.Invoke("Cleared all food.");
             RefreshInventoryOnly();
         }
-        catch (Exception ex) { Status.Value = $"Clear failed: {ex.Message}"; }
+        catch (Exception ex)
+        {
+            HandleActionException(ex, "Clear");
+        }
     }
 
     public void SetCountMax(int value)
     {
-        if (_session is null) return;
+        if (Session is null) return;
         try
         {
-            _session.SetBaseCountMax(Math.Clamp(value, 1, 9999));
+            var clamped = Math.Clamp(value, 1, 9999);
+            Session.SetBaseCountMax(clamped);
             RefreshInventoryOnly();
-            Status.Value = $"CountMax → {value}";
+            Toast?.Invoke($"CountMax → {clamped}");
         }
-        catch (Exception ex) { Status.Value = $"SetCountMax failed: {ex.Message}"; }
+        catch (Exception ex)
+        {
+            HandleActionException(ex, "SetCountMax");
+        }
     }
 
     // -------------------------------------------------------------------------
     private void RecomputeFilter()
     {
-        var q = FoodFilter.Value?.Trim() ?? "";
+        var q = FoodFilter.Value.Trim();
         FoodBankFiltered.Clear();
         if (q.Length == 0)
             FoodBankFiltered.AddRange(FoodBank);
         else
             FoodBankFiltered.AddRange(
-                FoodBank.Where(i => i.Id.Contains(q, StringComparison.OrdinalIgnoreCase)));
+                FoodBank.Where(i =>
+                    i.Id.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                    i.Name.Contains(q, StringComparison.OrdinalIgnoreCase)));
         FoodBankVersion.Value++;
     }
-
-    public void Dispose() => _session?.Dispose();
 }
 
 /// <summary>A (food, quantity) row for the "current inventory" tab.</summary>
